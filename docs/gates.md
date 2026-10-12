@@ -4,7 +4,7 @@ description: 'I changed some files. Which command do I run before I push?'
 icon: shield-check
 ---
 
-If you changed anything at all, run `pnpm verify`, which is `pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:unit` (about two minutes). If you also touched the tool surface, install, desktop or Rust, section 1 below names the one extra command your change needs. CI routes its expensive gates by path too (see section 1), so a gate you skip locally can also be skipped in CI.
+If you changed anything at all, run `pnpm verify` (`format:check`, `lint`, `typecheck`, `test:unit`; about two minutes). If you also touched the tool surface, install, desktop or Rust, section 1 below names the one extra command your change needs. CI is path-routed too, and `gate` counts a skipped job as green, so a gate you skip here may also be skipped in CI.
 
 > **One question this file answers:** _I changed some files. Which command do I run?_
 >
@@ -62,7 +62,7 @@ Find the row that matches what you changed. Run its commands. That is the whole 
 | You changed | Run | Cost |
 | --- | --- | --- |
 | Quick product feedback | `pnpm test:smoke` | recorded in `artifacts/smoke/result.json`; CI timing pending |
-| **Anything at all** | `pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:unit` | ~2 min |
+| **Anything at all** | `pnpm verify` | ~2 min |
 | The tool surface, the wire contract (`core`), or an observer | ↑ **and** `pnpm test:e2e` | +~8 min |
 | `reticle init`, `@reticlehq/vite-plugin`, `@reticlehq/next`, `@reticlehq/babel-plugin`, anything a user runs before their first session | ↑ **and** `pnpm gate:install` | +~15 min |
 | `@reticlehq/electron`, `adapters/realm/tauri`, the IPC observer, desktop capture | ↑ **and** `pnpm test:e2e:desktop` | +~3 min |
@@ -81,13 +81,16 @@ Which means a gate skipped locally can also be skipped in CI, if what you change
 | --- | --- |
 | `verify` (lint, docs lint, types) and `unit-tests` (the unit suite), in parallel; `format-check` is its own job | always |
 | `macos` | always, but only a narrow platform-sensitive slice of the tests |
-| `windows` | the merge queue, main, nightly and on demand; full build, typecheck, unit suite, and daemon runtime checks |
+| `windows` | a pull request that touches TypeScript source, scripts or the lockfile; always in the merge queue, main, nightly and on demand; full build, typecheck, unit suite, and daemon runtime checks |
 | `smoke` | product changes on PRs; always in the queue and on main, nightly, and manual runs |
 | `e2e` | a pull request that touches a package or app the battery boots; always in the merge queue and on main. Split into three parallel shards (`E2E_SHARD=k/3`); the integration suite and the soak run in shard 1 |
 | `rust` (Linux) and `rust-macos` | changes to the standalone Cargo tree or CI workflow; full runs nightly and on demand |
 | `install-packages` and `install-gate` | installation paths, CLI setup, build adapters, browser SDK, dependency graph, or gate machinery. A PR runs three Linux scaffolds and vite-react on Windows; the queue runs all thirteen on Linux; nightly/manual runs all thirteen on both OSes. One prepack produces the same tarballs for all cells |
 | the install gate's self-test | gate machinery changes, nightly, and manual runs. `--with-self-test` shares one registry publish across the control and positive phases |
 | `desktop-e2e` | only when desktop code changed |
+| `early-gates` and `break-matrix` | a change to `init/`, `server/src/command/cli/`, `server/src/command/setup/`, `install/` or `break/`; nightly and on demand. The shipped CLI's first-run refusals on Linux, macOS and Windows; the hostile-environment matrix |
+| `launchers` | a change to `install/`; nightly and on demand. Both launchers parse, are pure ASCII, and install the published CLI on Linux, macOS and Windows (PowerShell 5.1 and 7) |
+| `package-quality` | always: publint, are-the-types-wrong and the pack-size budgets for every published package |
 | `bench` | after merge: on a push to main when something that could move the numbers changed, nightly, and on demand. It is ~19 minutes, a contributor cannot act on a token regression, and a red main run names the commit before any release |
 
 ---
@@ -115,7 +118,7 @@ Each gate exists because the ones above it are blind to something. That blindnes
 | **Web e2e battery** | `pnpm test:e2e` | **39** specs against 3 booted servers and a real browser (the tool surface, the daemon lifecycle, transport faults, telemetry, trace shape), plus the soak | desktop runtimes; the install | `e2e` |
 | **Desktop battery** | `pnpm test:e2e:desktop` | two real Electron main processes (plain Vite + electron-vite) and a **packaged** Tauri binary, driven headless | web-only paths | `desktop-e2e` |
 | **Conformance** | `pnpm gate:conformance` | drives the published specification's scenarios against this implementation on a real browser, a real Electron shell AND a command-line subject (`run-self`, `run-desktop`, `run-cli`), scoring every verdict through the spec's own `adjudicate` rather than Reticle's kernel | the seven scenarios no fixture can plant, reported ABSENT, plus the four above the claimed profile, reported `not asked`. All three arms are negatively controlled: `gate:conformance:self-test` PLANTS a subject answering `yes` to every claim and requires the gate to refuse it. Both halves are needed and they catch different things -- the coverage floor catches a suite whose plantable scenarios are FALLING, the plant catches a gate that has gone BLIND. The CLI arm briefly had a `--self-test` that only inspected the run it was handed, which on a healthy tree exits non-zero and would redden CI on a working build; it plants at the client seam now, the way the browser arm does. One scenario still passes under the lie and should: `healthy-app-real-claim` genuinely expects a yes. The lie is injected ABOVE the realm, so a supervisor that spawned nothing is not caught by this control alone | ~3 min; runs in CI as the `conformance` job, path-routed on the protocol, the suite, the realm and the two fixture apps |
-| **Install gate** | `pnpm gate:install` | scaffolds **13** pristine apps across 2 OSes (4 cells on a pull request, the 13 Linux cells in the merge queue, all 26 nightly, on `main` and on demand), publishes this checkout to a local Verdaccio, lets `init` install itself, boots each app in a real browser, polls for a session that advertised capabilities | install _complexity_; see [`fixtures.md`](./fixtures.md) | `install-gate` |
+| **Install gate** | `pnpm gate:install` | scaffolds **13** pristine apps across 2 OSes (3 Linux and 1 Windows cell on a pull request, the 13 Linux cells in the merge queue, all 26 nightly, on `main` and on demand), publishes this checkout to a local Verdaccio, lets `init` install itself, boots each app in a real browser, polls for a session that advertised capabilities | install _complexity_; see [`fixtures.md`](./fixtures.md) | `install-gate` |
 | **Matrix records** | `pnpm matrix:validate` | every submitted client-compat record is well-formed | whether the client actually works | `matrix-records` |
 | **Windows** | (CI only) | that the code runs at all on the majority platform: build, typecheck, the unit suite and the daemon runtime checks | the e2e battery | `windows` |
 | **macOS** | (CI only) | the POSIX-but-not-Linux surface (paths, spawn, `lsof`, temp/state dirs) plus a real daemon's lifecycle | everything Linux already covers; it deliberately no longer re-runs the unit tier at a 10x billing multiplier | `macos` |
@@ -211,3 +214,7 @@ It **runs in CI** as the `conformance` job, path-routed on the protocol, the sui
 It is a separate job rather than a step inside `e2e` for two reasons. That job boots the demo API with `REFLECT_MS=6000`, so a conformance run beside it would score every scenario against a deliberately-slowed backend while still printing a number. Both also want port 8787. It stays cheap despite driving Electron, because the desktop half needs a display and **not** Rust: it drives `apps/electron-smoke`, not the packaged Tauri binary that makes `desktop-e2e` the slowest job in the file.
 
 Run it by hand too when you touch the protocol, the adjudicator, or anything a verdict is derived from; the path filter is a routing decision, not a definition of what can break a verdict.
+
+## Path routing
+
+CI path routing lives in [`scripts/ci/changes.mjs`](../scripts/ci/changes.mjs), and its output is written to the `changes` job's step summary. Each changed file is mapped to its nearest workspace package in [`scripts/ci/tier-map.json`](../scripts/ci/tier-map.json), which can add only `e2e` and `windows`; every other tier comes from the regexes in [`scripts/ci/tier-patterns.json`](../scripts/ci/tier-patterns.json). A path that matches no tier and is not docs-only, or a package missing from the map, turns every expensive job on. Any file under `.github/workflows/` or `scripts/ci/` does the same.
