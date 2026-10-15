@@ -33,6 +33,9 @@ import { describeCaseMiss, describeSplitTextMiss } from './split-text-miss.js';
 import { satisfiesProperty, type Baseline, type PropertyAssertion } from './property.js';
 import { describeNameNearMiss } from './name-near-miss.js';
 
+export const ARIA_HIDDEN_NOTE =
+  'text is inside an aria-hidden subtree — drawn on screen but excluded from the accessible tree';
+
 /**
  * The caveat for a present-testid list that was cut at its cap, or nothing when it was whole.
  *
@@ -73,8 +76,13 @@ async function matchOnce(
   session: PredicateSession,
   query: ElementQuery,
   state: ElementState | undefined,
+  diagnose?: boolean,
 ): Promise<MatchResult> {
-  const res = await session.command(ReticleCommand.MATCH, { query, state });
+  const res = await session.command(ReticleCommand.MATCH, {
+    query,
+    state,
+    ...(true === diagnose ? { diagnose: true } : {}),
+  });
   if (!res.ok) return { matched: false, count: 0, elements: [] };
   return (res.result ?? { matched: false, count: 0, elements: [] }) as MatchResult;
 }
@@ -183,7 +191,7 @@ export async function evalElement(
     const reason = describeUnusableElementQuery(query, residual.unusable);
     return { pass: false, failureReason: reason, inconclusive: reason };
   }
-  let match = await matchOnce(session, withAltProjected(query, residual.checks), state);
+  let match = await matchOnce(session, withAltProjected(query, residual.checks), state, diagnose);
   const subject = JSON.stringify(query);
   // A residual narrows the SET; `count` is every match while `elements` is only the described prefix,
   // so a locator broad enough to be truncated cannot be narrowed honestly. Say so instead of guessing.
@@ -360,10 +368,12 @@ export async function evalElement(
   const nearMissRole = QueryBy.ROLE === query.by ? query.value : query.role;
   const nearMiss = describeNameNearMiss(match.hint?.nameNearMiss, query.name, nearMissRole);
   const caseMiss = describeCaseMiss(match.hint?.caseMiss);
+  const ariaNote = true === match.hint?.ariaHiddenMatch ? ARIA_HIDDEN_NOTE : undefined;
   const clause =
     caseMiss ??
     splitText ??
     nearMiss ??
+    ariaNote ??
     (alsoHere === undefined || '' === alsoHere ? undefined : alsoHere);
   const suffix = clause === undefined ? '' : ` — ${clause}`;
   // The evidence list is capped in document order, so a region low on the page is exactly what it

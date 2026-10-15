@@ -20,7 +20,9 @@ import {
   getRole,
   describe,
   getStates,
+  isHiddenByAriaOnly,
   isInViewport,
+  isRenderedOutsideAriaHidden,
   isVisible,
 } from './a11y.js';
 import { isIgnored, isReticleOverlay } from './dom-ignore.js';
@@ -613,6 +615,7 @@ export function matchQuery(
    * asking for elements whose own text holds it, and names the container in its hint instead.
    */
   wholePhrase = true,
+  diagnose: boolean = true,
 ): MatchResult {
   // NO blanket try/catch here. It would turn ANY exception during candidate-finding into
   // `elements = []`, which is the same lie as the `default` arm above: a query that could not run
@@ -662,7 +665,7 @@ export function matchQuery(
     // PREDICATE uses, so without this a failed assertion was a dead end ("no element matched") while
     // the identical failure through reticle_query listed the testids that ARE present. Computed only
     // when there is nothing to report, so the hot path pays nothing.
-    ...(0 === filtered.length ? { hint: buildEmptyHint(query) } : {}),
+    ...(0 === filtered.length ? { hint: buildEmptyHint(query, state, diagnose) } : {}),
   };
 }
 
@@ -876,8 +879,32 @@ function testidFoundUnder(container: HTMLElement, query: ElementQuery): string |
   return undefined;
 }
 
+function textInAriaHidden(container: HTMLElement, wanted: string): boolean {
+  let inAriaHidden = false;
+  for (const el of elementsUnder(container)) {
+    if (isIgnored(el)) continue;
+    if (!isHiddenByAriaOnly(el)) continue;
+    if (fuzzyVisibleText(el.textContent ?? '', wanted)) {
+      inAriaHidden = true;
+      break;
+    }
+  }
+  if (!inAriaHidden) return false;
+  const memo = new Map<Element, boolean>();
+  for (const el of elementsUnder(container)) {
+    if (isIgnored(el)) continue;
+    if (!isRenderedOutsideAriaHidden(el)) continue;
+    if (fuzzyVisibleText(visibleTextOf(el, memo), wanted)) return false;
+  }
+  return true;
+}
+
 /** Diagnostic hint for a zero-match query: what testids ARE present in the searched scope. */
-function buildEmptyHint(query: ElementQuery): QueryEmptyHint {
+function buildEmptyHint(
+  query: ElementQuery,
+  state?: ElementState,
+  diagnose: boolean = true,
+): QueryEmptyHint {
   const container = resolveContainer(query.scope).container ?? document.body;
   const all = container.querySelectorAll(testIdSelector());
   const present: string[] = [];
@@ -916,6 +943,18 @@ function buildEmptyHint(query: ElementQuery): QueryEmptyHint {
       const shown = caseOnlyMatch(container, wanted);
       if (shown !== undefined) hint.caseMiss = shown;
     }
+  }
+  // A text or name match hidden only by aria-hidden — drawn on screen but excluded from the
+  // accessible tree. Only for visibility-related misses: a `state: 'checked'` miss on a visible
+  // element should blame the state, not an unrelated aria-hidden twin (#1070). Gated on `diagnose`
+  // because the scan walks every element in the container and interim poll checks never read it.
+  if (
+    diagnose &&
+    wanted !== undefined &&
+    hint.splitText === undefined &&
+    (state === undefined || ElementState.VISIBLE === state || ElementState.IN_VIEWPORT === state)
+  ) {
+    if (textInAriaHidden(container, wanted)) hint.ariaHiddenMatch = true;
   }
   const near = nameNearMisses(container, query);
   if (near.length > 0) hint.nameNearMiss = near;
