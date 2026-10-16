@@ -33,6 +33,12 @@ export const REDACTED_FILL = '<redacted: supply at replay>';
 /** The arg a saved redacted fill names its variable in. Dropped before the step reaches the page. */
 export const SECRET_NAME_ARG = 'secret';
 
+/**
+ * The arg a RECORDED step carries when the SDK said its target holds a secret. Recorder-internal:
+ * it decides redaction at save and never reaches the saved flow.
+ */
+export const SECRET_FIELD_ARG = 'secretField';
+
 /** The prefix every secret's variable carries. */
 const SECRET_ENV_PREFIX = 'RETICLE_SECRET_';
 
@@ -97,7 +103,9 @@ export function unsuppliedSecrets(
 ): UnsuppliedSecret[] {
   const out: UnsuppliedSecret[] = [];
   const seen = new Set<string>();
-  for (const step of flow.steps ?? []) {
+  // A sequence's fills are its sub-steps: reading only the top level missed a sign-in recorded as one.
+  const steps = (flow.steps ?? []).flatMap((step) => [step, ...(step.steps ?? [])]);
+  for (const step of steps) {
     if (REDACTED_FILL !== step.args?.['value']) continue;
     const field = anchorFieldName(step.anchor);
     if (field === undefined) continue;
