@@ -60,7 +60,7 @@ describe('the request behind a verification', () => {
     await intentTool?.handler(d, { action: 'declare', request: 'Add reorder' });
     const store = new RunStore(fs, ROOT);
     const run = (id: string, createdAt: number) =>
-      ({ runId: id, createdAt, flows: [], checks: [] }) as never;
+      ({ runId: id, createdAt, project: { name: 'p' }, flows: [], checks: [] }) as never;
     await store.write(run('run-soon', 2_000));
     await store.write(run('run-later', 1_000 + 7 * 60 * 60 * 1000));
     const soon = JSON.parse(await fs.readFile(`${ROOT}/runs/run-soon.json`)) as {
@@ -85,7 +85,7 @@ describe('a request belongs to the run that answered it', () => {
     await intentTool?.handler(d, { action: 'declare', request: 'Sign in and check Diagnostics' });
     const store = new RunStore(fs, ROOT);
     const run = (id: string, createdAt: number) =>
-      ({ runId: id, createdAt, flows: [], checks: [] }) as never;
+      ({ runId: id, createdAt, project: { name: 'p' }, flows: [], checks: [] }) as never;
     const read = async (id: string) =>
       (
         JSON.parse(await fs.readFile(`${ROOT}/runs/${id}.json`)) as {
@@ -97,6 +97,36 @@ describe('a request belongs to the run that answered it', () => {
     await store.write(run('drive-tab', 2_000));
     expect((await read('drive-tab'))?.request).toBe('Sign in and check Diagnostics');
     expect(await read('drive-tab-2')).toBeUndefined();
+  });
+
+  /*
+   * Found driving it live: the prompt hook rewrites request.json on every prompt, so a newer
+   * prompt replaced the request before the tab's run was written again. The rewrite found no
+   * request for itself and dropped the one it already carried, and the platform lost it too.
+   */
+  it('keeps the request a run carries when a newer prompt arrives before the run is rewritten', async () => {
+    const { d, fs } = deps(1_000);
+    await intentTool?.handler(d, { action: 'declare', request: 'Sign in and check Diagnostics' });
+    const store = new RunStore(fs, ROOT);
+    const run = {
+      runId: 'drive-tab',
+      createdAt: 2_000,
+      project: { name: 'p' },
+      flows: [],
+      checks: [],
+    } as never;
+    const read = async () =>
+      (
+        JSON.parse(await fs.readFile(`${ROOT}/runs/drive-tab.json`)) as {
+          context?: { request?: string };
+        }
+      ).context;
+    await store.write(run);
+    const later = deps(5_000);
+    (later.d as { fs: unknown }).fs = fs;
+    await intentTool?.handler(later.d, { action: 'declare', request: 'Now thank you' });
+    await store.write(run);
+    expect((await read())?.request).toBe('Sign in and check Diagnostics');
   });
 });
 
@@ -116,6 +146,28 @@ describe('who the request is shared with', () => {
 
   it('goes to the platform from a linked project by default', async () => {
     expect((await declare()).shared).toBe(true);
+  });
+
+  /** `git worktree add` copies no git-ignored `.reticle/cloud.json`: the worktree is still linked. */
+  it('goes to the platform from a worktree of a linked project', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'reticle-share-wt-'));
+    mkdirSync(join(dir, 'main', '.git', 'worktrees', 'wt'), { recursive: true });
+    writeFileSync(join(dir, 'main', '.git', 'HEAD'), 'ref: refs/heads/main');
+    mkdirSync(join(dir, 'main', '.reticle'));
+    writeFileSync(join(dir, 'main', '.reticle', 'cloud.json'), '{"projectId":"p"}');
+    mkdirSync(join(dir, 'wt', '.reticle'), { recursive: true });
+    writeFileSync(
+      join(dir, 'wt', '.git'),
+      `gitdir: ${join(dir, 'main', '.git', 'worktrees', 'wt')}`,
+    );
+    const root = join(dir, 'wt', '.reticle');
+    const { d, fs } = deps(1_000);
+    (d as { reticleRoot: string }).reticleRoot = root;
+    await intentTool?.handler(d, { action: 'declare', request: 'Refund a payment' });
+    const saved = PromptContextSchema.parse(
+      JSON.parse(await fs.readFile(reticleDirPaths(root).request)),
+    );
+    expect(saved.shared).toBe(true);
   });
 
   it('stays on this machine when the project says shareRequests: false', async () => {

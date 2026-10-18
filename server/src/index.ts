@@ -3,6 +3,7 @@ import { coveragePercents } from './features/exhaust/ledger.js';
 import { agentWiring } from './portal/session/zero-install-first-call.js';
 import { pushIfMoved, watchAccountFiles } from './memory/impact/account-watch.js';
 import { SESSION_FILE } from './command/cli/cloud-kit.js';
+import { signedInTo } from './command/cli/auth/cloud-session.js';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { linkedCloudPort, sessionCloudPort } from './memory/cloud/cloud-config.js';
@@ -11,7 +12,7 @@ import { attachCloudSync, flushWithin } from './memory/cloud/sync-daemon.js';
 import { wireHooks } from './hooks/hook-commands.js';
 import { currentDrivenBy } from './hooks/driven-by.js';
 import { artifactRootResolver } from './memory/project/artifact-root-resolver.js';
-import { servingDirectoryOf } from './portal/session/serving-directory.js';
+import { liveCheckoutSource, servingDirectoryOf } from './portal/session/serving-directory.js';
 import type { Server } from 'node:http';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -212,15 +213,13 @@ export async function start(options: StartOptions = {}): Promise<RunningServer> 
    * here, and their work waited on disk for a later daemon. It does nothing for an unlinked root,
    * and `close` sends one last bounded cycle.
    */
-  // The same client version the daemon's sync sends, so the server can tell the two apart.
-  const syncClient = { clientVersion: SERVER_VERSION };
   const cloudSync = attachCloudSync({
     fs: createNodeFileSystem(),
     reticleRoot: options.reticleRoot ?? join(process.cwd(), ReticleDir.ROOT),
     homeDir: homedir(),
     env: process.env,
     otherRoots: knownProjectRoots,
-    ...syncClient,
+    clientVersion: SERVER_VERSION,
   });
   const security = await resolveBridgeSecurityWithAutoToken(options);
   const bridge = new Bridge({ port, sdkFix: sdkFixForProject, ...security });
@@ -234,6 +233,8 @@ export async function start(options: StartOptions = {}): Promise<RunningServer> 
   if (activeProjectId !== undefined) {
     bridge.sessions.setDefaultScope({ projectId: activeProjectId });
   }
+  // Then to the agent's own git worktree: every worktree declares the same projectId.
+  bridge.sessions.setCheckoutScope(liveCheckoutSource());
   const baselines = new BaselineStore();
   const recordings = new RecordingStore(() => currentDrivenBy() !== undefined);
   // drive precedence: driveUrl (launch+own a browser) → CDP (attach) → none.
@@ -400,6 +401,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<RunningSe
     sdkFix: sdkFixForProject,
     ...security,
   });
+  // The daemon serves every agent on the machine: scope id-less calls to the calling agent's worktree.
+  bridge.sessions.setCheckoutScope(liveCheckoutSource());
   const repaint = (only?: string, ifChanged = false): void => {
     for (const session of bridge.sessions.all()) {
       const root =
@@ -511,6 +514,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<RunningSe
     env: process.env,
     otherRoots: knownProjectRoots,
     clientVersion: SERVER_VERSION,
+    signedIn: (url) => signedInTo(join(homedir(), ReticleDir.ROOT), url),
   });
   syncNudge.run = (): void => cloudSync.nudge();
   // `syncNow`, not `nudge` (a cycle soon): somebody is watching the button. Never awaited.
