@@ -8,6 +8,7 @@ import {
   SettleReason,
 } from '@reticlehq/core';
 import { isHiddenNativeOption } from '@/dom/query.js';
+import { isReticleUi } from '@/dom/dom-ignore.js';
 import { asSyntheticInput } from './synthetic/synthetic-input.js';
 import { echoRef, refs } from '@/dom/addressing/refs.js';
 import {
@@ -728,6 +729,10 @@ export async function executeAction(
     occluded: geometry.occluded,
     occludedBy: geometry.occludedBy,
     scrolledIntoView: geometry.scrolledIntoView,
+    // Omitted unless they apply: each names a reason a person could not have made this click.
+    ...(geometry.occluderName === undefined ? {} : { occluderName: geometry.occluderName }),
+    ...(true === geometry.noSize ? { noSize: true as const } : {}),
+    ...(true === geometry.offViewport ? { offViewport: true as const } : {}),
     // Omitted when there was no hold: an absent key says "this action does not hold", where a 0
     // would read as "it held for no time", which is a different and misleading claim.
     ...(heldMs > 0 ? { heldMs } : {}),
@@ -745,7 +750,9 @@ export async function executeAction(
       : action === ActionType.HOVER && elementHasHoverHandlers(el)
         ? ActionWarning.HOVER_NATIVE_ENTER_LEAVE
         : undefined;
-  return result(ref, action, effect, settled, settleReason, anchor, warning);
+  const done = result(ref, action, effect, settled, settleReason, anchor, warning);
+  // Only reachable with the HUD exposed: said so the recorder keeps it out of the app's flows.
+  return isReticleUi(el) ? { ...done, reticleUi: true } : done;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => nativeSetTimeout(r, ms));

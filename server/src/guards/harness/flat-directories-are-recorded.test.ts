@@ -122,7 +122,10 @@ const OVER_THE_LINE: Readonly<Record<string, number>> = {
   // than a line in `global-press.ts` is the one recorded below: `core/src/wire`'s filenames are
   // published API, and a page that only presses a key should not pull in the reader for a list of
   // them. Recorded rather than grouped, by the same rule as the note underneath.
-  'core/src/wire': 18,
+  // 19 with `next-step.ts`: a coded refusal's `next` steps and the connect command, which the error
+  // envelope carries to the agent. It needs `ReticleTool`, and `wire/constants` may not reach up
+  // into `wire` (the directory-reach guard refused it there).
+  'core/src/wire': 19,
   // 16 since `snapshot-tree.ts`. The snapshot tree is a format the BROWSER writes and several
   // things on the Node side read back, and its parser was living beside the MCP tool handlers — so
   // every other reader imported from the tool surface to parse a string the tool surface does not
@@ -323,7 +326,9 @@ const OVER_THE_LINE: Readonly<Record<string, number>> = {
   // pair is the whole rule.
   // 36 with `replay-from-hud.ts`: the ▶ replay a person starts from the HUD, moved out of
   // `server/src/index.ts` (at its cap) when it gained a progress push per step.
-  'server/src/language/flows': 36,
+  // 37 with `flow-replayable.ts`: whether a saved flow can replay at all, read by the save, the
+  // suite verdict and the suite selection, which all live here.
+  'server/src/language/flows': 37,
   // 12 since `drive-flow.ts`: the rule that turns a session's ambient tape into a flow per journey,
   // and the gate that refuses to save one asserting nothing. It sits beside `session-end.ts` because
   // teardown is the only caller and the tape is data by then — the reach guard already refused the

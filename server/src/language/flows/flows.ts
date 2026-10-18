@@ -60,6 +60,12 @@ import {
   isValidFlowName,
 } from '@/memory/project/dir/reticle-dir.js';
 import { describeFlowZodFailure, parseFlowFileText } from './flow-expect-grammar.js';
+import {
+  readyForReplay,
+  replayability,
+  Replayable,
+  type Replayability,
+} from './flow-replayable.js';
 import type { Clock } from '@/machine/clock.js';
 
 /**
@@ -115,6 +121,8 @@ export function anchorForStep(args: Record<string, unknown>): {
     };
     const source = sourceArg(args);
     if (source !== undefined) anchor.source = source;
+    const of = args['of'];
+    if ('number' === typeof of && 1 < of) anchor.of = of;
     return { anchor, degraded: false };
   }
   // Role + NAME is a real anchor, not a degraded placeholder.
@@ -277,6 +285,7 @@ export function recordedStepToFlowStep(step: RecordedStep): FlowStep {
   if (step.timeoutMs !== undefined) out.timeoutMs = step.timeoutMs;
   if (step.page !== undefined) out.page = step.page;
   if (step.endPage !== undefined && step.endPage !== step.page) out.endPage = step.endPage;
+  if (true === step.writes) out.writes = true;
   return out;
 }
 
@@ -327,6 +336,8 @@ interface SaveSummary {
    * and absent the moment the flow carries prose or an `intentId`. See `flowIntentGap`.
    */
   intentGap?: InstrumentationGap;
+  /** Absent when the flow replays as it is; else whether it can, and why not, by step. */
+  replayability?: Replayability;
 }
 
 /**
@@ -412,12 +423,16 @@ export class FlowStore {
    */
   #summary(flow: FlowFile): SaveSummary {
     const gap = flowIntentGap(flow);
+    const replay = replayability(flow);
     return {
       name: flow.name,
       stepCount: flow.steps.length,
       degraded: flow.steps.filter((s) => true === s.degraded).length,
       empty: 0 === flow.steps.length,
       ...(gap === undefined ? {} : { intentGap: gap }),
+      ...(Replayable.YES === replay.status && replay.writes === undefined
+        ? {}
+        : { replayability: replay }),
     };
   }
 
@@ -447,17 +462,19 @@ export class FlowStore {
     };
     const intent = program.steps.find((step) => step.intent !== undefined)?.intent;
     const annotated = withAnnotations(base, annotations);
-    return withDistinctSecretKeys({
-      ...annotated,
-      // The action's own intent, when nobody annotated the flow — see RecordedStep.intent.
-      ...(annotated.intent === undefined && intent !== undefined ? { intent } : {}),
-      // Else the sentence an auto-saved drive built from its expects, marked as built.
-      ...(annotated.intent === undefined && intent === undefined && program.intent !== undefined
-        ? { intent: program.intent, ...(program.intentDerived ? { intentDerived: true } : {}) }
-        : {}),
-      ...routeClaims(annotated.startPath, annotated.steps),
-      ...(program.author === undefined ? {} : { author: program.author }),
-    });
+    return readyForReplay(
+      withDistinctSecretKeys({
+        ...annotated,
+        // The action's own intent, when nobody annotated the flow — see RecordedStep.intent.
+        ...(annotated.intent === undefined && intent !== undefined ? { intent } : {}),
+        // Else the sentence an auto-saved drive built from its expects, marked as built.
+        ...(annotated.intent === undefined && intent === undefined && program.intent !== undefined
+          ? { intent: program.intent, ...(program.intentDerived ? { intentDerived: true } : {}) }
+          : {}),
+        ...routeClaims(annotated.startPath, annotated.steps),
+        ...(program.author === undefined ? {} : { author: program.author }),
+      }),
+    );
   }
 
   /**
@@ -576,7 +593,7 @@ export class FlowStore {
         detail: describeFlowZodFailure(parsed.error),
       };
     }
-    const valid = await this.#linkIntent(parsed.data);
+    const valid = await this.#linkIntent(readyForReplay(parsed.data));
     await this.#fs.mkdir(flowParentDir(this.#root, asFlowName(valid.name), pid));
     await this.#fs.writeFile(
       flowPath(this.#root, asFlowName(valid.name), pid),

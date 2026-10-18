@@ -11,7 +11,7 @@ import { withSizeCost } from '@/portal/session/output-budget.js';
 import { applySnapshotDelta, SnapshotCache } from './read/snapshot-delta.js';
 import { asNumber, asRecord, asString } from '@reticlehq/core';
 import { countSchema } from './args/numeric-bounds.js';
-import { normalizeQueryArgs } from './read/query-shape.js';
+import { emptyQueryRefusal, normalizeQueryArgs } from './read/query-shape.js';
 import { shapeQueryResult } from './read/query-windowed.js';
 import { withUnsettledFind } from './act/unsettled-find.js';
 
@@ -510,6 +510,8 @@ export const RAW_TOOLS: ToolDef[] = withCompactEnvelope([
     handler: (deps, rawArgs) => {
       // Accept the predicate's named-field spelling too — see query-shape.ts.
       const args = normalizeQueryArgs(rawArgs);
+      const empty = emptyQueryRefusal(args);
+      if (empty !== undefined) return Promise.reject(empty);
       const session = deps.sessions.resolve(asString(args['sessionId']));
       return commandOrThrow(deps, asString(args['sessionId']), ReticleCommand.QUERY, {
         by: args['by'],
