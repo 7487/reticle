@@ -6,9 +6,12 @@ import {
   DriveErrorCode,
   InputMode,
   InputModeReason,
+  INSPECT_IN_VIEWPORT_FIELD,
+  INSPECT_REVEAL_ARG,
   SessionState,
 } from '@reticlehq/core';
 import type { CommandResult } from '@reticlehq/core';
+import { asRecord } from '@reticlehq/core';
 import { TOOLS, type ToolDeps } from '@/surface/tools/tools.js';
 import { ReticleTool } from '@reticlehq/core';
 import { BaselineStore } from '@/memory/project/baselines.js';
@@ -21,9 +24,12 @@ import { boxCenter, DriveError, type ElementBox, type RealInputProvider } from '
 import type { Session } from '@/portal/session/session.js';
 import type { SessionManager } from '@/portal/session/session-manager.js';
 import type { BrowserPool } from '@/portal/pool/browser-pool.js';
-import { HOVER_NEEDS_POINTER_MSG } from '@/surface/tools/real-input-attempt.js';
+import {
+  HOVER_NEEDS_POINTER_MSG,
+  HOVER_OFF_VIEWPORT_MSG,
+  withLeaseKeyboard,
+} from '@/surface/tools/real-input-attempt.js';
 import { actCommand } from '@/surface/tools/act-tools.js';
-import { withLeaseKeyboard } from '@/surface/tools/real-input-attempt.js';
 
 const SESSION_URL = 'http://localhost:5173/app';
 const SOURCE_BOX: ElementBox = { x: 0, y: 0, width: 200, height: 100 };
@@ -45,6 +51,14 @@ interface FakeSessionState {
   focusableRef?: string;
   /** Set once an ACT focus landed on `focusableRef`. */
   focused?: string;
+  /** When set, this ref sits outside the viewport until a reveal brings it in. */
+  offViewportRef?: string;
+  /** Whether an INSPECT with `reveal` scrolls `offViewportRef` into view. */
+  revealBrings?: boolean;
+  /** Every ref an INSPECT asked to reveal. */
+  revealRefs?: string[];
+  /** An SDK that predates the viewport field: INSPECT never reports it. */
+  legacySdk?: boolean;
 }
 
 function fakeSession(state: FakeSessionState): Session {
@@ -64,6 +78,19 @@ function fakeSession(state: FakeSessionState): Session {
         });
       }
       const box = 'eTarget' === ref ? TARGET_BOX : SOURCE_BOX;
+      // The real INSPECT's shape: `states` from describe() never carries `inViewport`. The page
+      // reports the viewport in its own field, and only when asked to reveal. An older SDK omits it.
+      const reveal = true === args[INSPECT_REVEAL_ARG];
+      if (reveal && ref === state.offViewportRef) state.revealRefs?.push(ref);
+      const offView = ref === state.offViewportRef;
+      const inView = !offView || true === state.revealBrings;
+      const viewport =
+        reveal && true !== state.legacySdk
+          ? {
+              [INSPECT_IN_VIEWPORT_FIELD]: inView,
+              ...(offView && inView ? { scrolledIntoView: true } : {}),
+            }
+          : {};
       return Promise.resolve({
         kind: 'command_result',
         id: 'c',
@@ -71,7 +98,10 @@ function fakeSession(state: FakeSessionState): Session {
         result: {
           box,
           ...(state.inspectName === undefined ? {} : { name: state.inspectName }),
-          ...(ref === state.focused ? { states: ['focused'] } : {}),
+          // describe() always sends states, and never `inViewport`. That shape is what hid #1711's
+          // first fix from this suite, so the fake keeps it.
+          states: ref === state.focused ? ['visible', 'focused'] : ['visible'],
+          ...viewport,
         },
       });
     }
@@ -829,5 +859,117 @@ describe('a replay on a lease presses with its real keyboard', () => {
     await session.command('act', { ref: 'e1', action: 'click', args: {} });
     expect(state.actCalls).toBe(1);
     expect(session.elapsed()).toBe(0);
+  });
+});
+
+describe('a real gesture on a target outside the viewport (#1711)', () => {
+  it('asks the page to scroll the target into view, then performs on the new box', async () => {
+    const provider = makeProvider(true);
+    const state: FakeSessionState = {
+      actCalls: 0,
+      inspectRefs: [],
+      offViewportRef: 'e1',
+      revealBrings: true,
+      revealRefs: [],
+    };
+
+    const res = await runAct(fakeDeps(provider, state), { ref: 'e1', action: 'hover' });
+
+    expect(state.revealRefs).toEqual(['e1']);
+    expect(res.inputMode).toBe(InputMode.REAL);
+    expect(provider.calls).toHaveLength(1);
+    expect(asRecord(res.result)['scrolledIntoView']).toBe(true);
+  });
+
+  it('does not perform a native click on a box that is still outside the viewport', async () => {
+    // The pointer would go to coordinates off the page and report `performed: true` while nothing
+    // reached the control. The synthetic path scrolls and hit-tests on its own.
+    const provider = makeProvider(true);
+    const state: FakeSessionState = {
+      actCalls: 0,
+      inspectRefs: [],
+      offViewportRef: 'e1',
+      revealBrings: false,
+      revealRefs: [],
+    };
+
+    const res = await runAct(fakeDeps(provider, state), {
+      ref: 'e1',
+      action: 'click',
+      args: { native: true },
+    });
+
+    expect(provider.calls).toHaveLength(0);
+    expect(res.inputMode).toBe(InputMode.SYNTHETIC);
+    expect(res.inputModeReason).toBe(InputModeReason.ELEMENT_NOT_LOCATABLE);
+  });
+
+  it('refuses a hover on a box that is still outside the viewport', async () => {
+    // A synthetic hover never applies :hover, so falling back would be the false success.
+    const provider = makeProvider(true);
+    const state: FakeSessionState = {
+      actCalls: 0,
+      inspectRefs: [],
+      offViewportRef: 'e1',
+      revealBrings: false,
+      revealRefs: [],
+    };
+
+    await expect(runAct(fakeDeps(provider, state), { ref: 'e1', action: 'hover' })).rejects.toThrow(
+      HOVER_OFF_VIEWPORT_MSG,
+    );
+    expect(provider.calls).toHaveLength(0);
+    expect(state.actCalls).toBe(0);
+  });
+
+  it('runs the gesture as before when an older SDK does not report the viewport', async () => {
+    // Absence is unknown, not out of view. Reading it as out refused every real hover on every
+    // older SDK, which is the regression a missing field must never cause.
+    const provider = makeProvider(true);
+    const state: FakeSessionState = {
+      actCalls: 0,
+      inspectRefs: [],
+      offViewportRef: 'e1',
+      revealBrings: false,
+      revealRefs: [],
+      legacySdk: true,
+    };
+
+    const res = await runAct(fakeDeps(provider, state), { ref: 'e1', action: 'hover' });
+
+    expect(res.inputMode).toBe(InputMode.REAL);
+    expect(provider.calls).toHaveLength(1);
+  });
+
+  it('performs a real hover on an element already on screen', async () => {
+    // The e2e failure this shape hid: the page reports the field, and an on-screen element says true.
+    const provider = makeProvider(true);
+    const state: FakeSessionState = { actCalls: 0, inspectRefs: [] };
+
+    const res = await runAct(fakeDeps(provider, state), { ref: 'e1', action: 'hover' });
+
+    expect(res.inputMode).toBe(InputMode.REAL);
+    expect(asRecord(res.result)['scrolledIntoView']).toBeUndefined();
+  });
+
+  it('checks the drop target of a drag the same way', async () => {
+    const provider = makeProvider(true);
+    const state: FakeSessionState = {
+      actCalls: 0,
+      inspectRefs: [],
+      offViewportRef: 'eTarget',
+      revealBrings: false,
+      revealRefs: [],
+    };
+
+    const res = await runAct(fakeDeps(provider, state), {
+      ref: 'e1',
+      action: 'drag',
+      args: { toRef: 'eTarget' },
+    });
+
+    expect(state.revealRefs).toEqual(['eTarget']);
+    expect(provider.calls).toHaveLength(0);
+    expect(res.inputModeReason).toBe(InputModeReason.DRAG_TARGET_UNRESOLVED);
   });
 });
