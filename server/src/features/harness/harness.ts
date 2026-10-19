@@ -283,9 +283,14 @@ export interface HarnessOptions {
   endsAt?: { readonly text: string; readonly own: readonly string[] };
 }
 
-/** Why a drive ended before the model said so. */
-const msgReachedEnd = (end: string): string =>
-  `Reached the end the goal names ("${end}") after a check held, so the drive stopped there.`;
+/**
+ * Said to the model once the page shows the end the goal quotes. The drive used to stop right here,
+ * before the model's `finish`, and that skipped the platform's last check: it holds the finish and
+ * asserts the claim's values on the drive's own writes. On the broken checkout the page showed
+ * "charged $133.60" while the order went out at 16700, and the drive stopped as goal met.
+ */
+const msgEndReached = (end: string): string =>
+  `The page shows the end the goal names ("${end}") and a check held. Do not drive further. Call \`finish\` now.`;
 
 /** A check in this turn that came back yes: the moment worth looking for the end. */
 const heldCheck = (outcome: ToolOutcome): boolean =>
@@ -400,6 +405,8 @@ async function driveToEnd(
   const usage: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   const proved = (): boolean => toolCalls.some(isProof);
   let askedToProve = false;
+  // Set once the page showed the goal's end and the model was told to finish.
+  let endTold = false;
   // Actions that just changed nothing; forgotten as soon as any action moves the page.
   const inert = new Set<string>();
 
@@ -535,19 +542,15 @@ async function driveToEnd(
     history.push({ role: 'tool', outcomes });
     const end = options.endsAt;
     if (
+      !endTold &&
       end !== undefined &&
       outcomes.some(heldCheck) &&
       (await lookFor((name, args) => toolset.invoke(name, args), end.text, end.own))
     ) {
-      return {
-        stopReason: StopReason.FINISHED,
-        summary: msgReachedEnd(end.text),
-        steps: step + 1,
-        toolCalls,
-        usage,
-        proved: proved(),
-        goalMet: true,
-      };
+      // The verdict is the finish's, never the page's: tell the model, and let its finish (which
+      // the platform may hold to read and assert first) end the drive. The step budget bounds it.
+      history.push({ role: 'user', text: msgEndReached(end.text) });
+      endTold = true;
     }
   }
 

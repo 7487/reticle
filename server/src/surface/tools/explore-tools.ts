@@ -121,7 +121,7 @@ export const EXPLORE_TOOLS: ToolDef[] = [
       next: z.object({ action: z.string(), runId: z.string() }).optional(),
       /** Seconds since the drive started, while it runs. */
       elapsedS: z.number().optional(),
-      /** While it runs: poll again with the same call; stopping never stops the drive. */
+      /** While it runs: poll again. Once it ended with a failed check: fix the code, then drive again. */
       instruction: z.string().optional(),
       stopReason: z.string().optional(),
       /** Which driver actually drove, so a comparison can never misattribute its own result. */
@@ -172,6 +172,11 @@ export const EXPLORE_TOOLS: ToolDef[] = [
        * at its end, which a caller that only shows the verdict otherwise cannot tell anybody.
        */
       driverAccount: z.string().optional(),
+      /**
+       * The platform's own failed checks, verbatim: what was expected, what was observed, on which
+       * request. The fix request quotes them, so the agent knows exactly what to fix.
+       */
+      findings: z.array(z.string()).optional(),
       /** Present when the drive broke: a model that would not answer, a wedged browser. */
       error: z.string().optional(),
       /** What the drive cost, cache hits included, so an expensive run is visible rather than felt. */
@@ -344,9 +349,63 @@ async function answerDrive(
       instruction: stillRunning(runId, record.steps, elapsedS),
     };
   }
-  if (record.result !== undefined) return { status: record.status, runId, ...record.result };
+  if (record.result !== undefined) {
+    const fix = fixRequest(record.result);
+    return {
+      status: record.status,
+      runId,
+      ...record.result,
+      ...(fix === undefined ? {} : { instruction: fix }),
+    };
+  }
   if (refuseBroken && record.error !== undefined) throw new Error(record.error);
   return { status: record.status, runId, steps: record.steps, error: record.error ?? 'no result' };
+}
+
+/**
+ * What a finished drive asks of the agent that reads it: a failed check is a defect to fix, and the
+ * fix is proved only when the same drive runs again. Without it the agent read "1 failed" and stopped.
+ */
+export function fixRequest(result: Record<string, unknown>): string | undefined {
+  const failed = asRecord(result['checks'])['failed'];
+  const findings = Array.isArray(result['findings'])
+    ? result['findings'].filter((f): f is string => 'string' === typeof f)
+    : [];
+  const rerun =
+    'Fix the code, then start the same drive again (the same persona or planId) to verify the fix. ' +
+    'Do not report it fixed before that drive passes.';
+  if (0 < findings.length) return `The Harness found a defect: ${findings.join(' ')} ${rerun}`;
+  if ('number' === typeof failed && failed >= 1)
+    return (
+      `The Harness found a defect: ${String(failed)} check${1 === failed ? '' : 's'} failed. Read ` +
+      `\`summary\` and \`goals\` for what failed. ${rerun}`
+    );
+  // A drive that ran to its end and still missed its goal is not a pass either: on the broken
+  // checkout every check held while the order went out at full price. It is a lead, not a verdict,
+  // so the agent is asked to find out which, not told there is a defect.
+  if (StopReason.FINISHED === result['stopReason'] && false === result['goalMet'])
+    return (
+      'The Harness drive did not reach its goal, so nothing is proved. Read `summary` and check the ' +
+      'outcome the goal names (for example the request body with reticle_observe). If it shows a ' +
+      'defect, fix the code, then start the same drive again (the same persona or planId) to verify ' +
+      'the fix. Do not report it fixed before that drive passes.'
+    );
+  return undefined;
+}
+
+/** How the platform opens a check it failed in a drive's summary: "Not proved: <what, where>". */
+const PLATFORM_FAILED = /Not proved: ([^\n]+)/g;
+/** How the answer's summary says one of them. */
+const FINDING_LEAD = 'Failed on the platform:';
+
+/**
+ * The platform's failed checks, each verbatim, read from its run summary. A plan run leaves the
+ * driver's account out of the answer, and with it went "totalCents 16700, the claim says 13360".
+ */
+export function platformFindings(summary: string): string[] {
+  return [...summary.matchAll(PLATFORM_FAILED)].flatMap((m) =>
+    m[1] === undefined ? [] : [m[1].trim()],
+  );
 }
 
 /** A run this machine no longer holds, from the platform it synced to. */
@@ -465,8 +524,10 @@ export function exploreReport(explored: ExploreResult): Record<string, unknown> 
     disparity,
   } = explored;
   const checks = checkTally(drive.toolCalls);
+  const findings = platformFindings(drive.summary);
   return {
     stopReason: drive.stopReason,
+    ...(0 === findings.length ? {} : { findings }),
     driver: driverName,
     steps: drive.steps,
     savedFlows: [...savedFlows],
@@ -512,6 +573,7 @@ export function exploreReport(explored: ExploreResult): Record<string, unknown> 
         journeys,
       ),
       ...[unprovedGoals(goals)].filter((line): line is string => line !== undefined),
+      ...findings.map((finding) => `${FINDING_LEAD} ${finding}`),
     ].join('\n'),
     // Not beside a platform plan: its lanes' accounts count saves the platform asked for ("saved 3
     // flow(s)") where `savedFlows` lists what is on disk, and an answer has one count. Each journey's

@@ -7,6 +7,7 @@ import {
   MSG_ALREADY_DRIVING,
   answerExplore,
   exploreReport,
+  fixRequest,
   type ExploreDrive,
 } from './explore-tools.js';
 import {
@@ -121,6 +122,45 @@ describe('a Harness drive, started then polled', () => {
     d.end({ summary: 'drove checkout' });
     const out = record(await pending);
     expect(out).toMatchObject({ status: DriveStatus.DONE, summary: 'drove checkout' });
+  });
+
+  it('asks the agent to fix and re-verify when the drive found a failed check', async () => {
+    const d = held();
+    const pending = answerExplore(deps(), { wait: 30 }, undefined, d.drive);
+    await d.started();
+    d.end({
+      summary: 'order sent without the promo',
+      checks: { held: 1, failed: 1, undecided: 0 },
+    });
+    const out = record(await pending);
+    expect(out['instruction']).toContain('1 check failed');
+    expect(out['instruction']).toContain('Fix the code');
+    expect(out['instruction']).toContain('start the same drive again');
+  });
+
+  // From the final headless run: the broken checkout's drive held 2 checks, failed none, and ended
+  // "NOT PROVED … the goal was not reached". The agent got no instruction to fix and re-run.
+  it('asks for a look, a fix and a re-run when the drive finished without reaching its goal', async () => {
+    const d = held();
+    const pending = answerExplore(deps(), { wait: 30 }, undefined, d.drive);
+    await d.started();
+    d.end({
+      stopReason: 'finished',
+      goalMet: false,
+      summary: 'NOT PROVED',
+      checks: { held: 2, failed: 0, undecided: 0 },
+    });
+    const out = record(await pending);
+    expect(out['instruction']).toContain('did not reach its goal');
+    expect(out['instruction']).toContain('start the same drive again');
+  });
+
+  it('adds no fix request when every check held', async () => {
+    const d = held();
+    const pending = answerExplore(deps(), { wait: 30 }, undefined, d.drive);
+    await d.started();
+    d.end({ summary: 'ok', checks: { held: 2, failed: 0, undecided: 0 } });
+    expect(record(await pending)['instruction']).toBeUndefined();
   });
 
   it('never pays for a second drive while one is running: a second start returns the first', async () => {
@@ -258,9 +298,49 @@ describe('the answer of a drive that ran the platform plan', () => {
     expect(out['note']).toBeUndefined();
   });
 
+  /*
+   * The platform's run summary from a live drive of the broken SAVE20 checkout, verbatim. The
+   * dashboard showed "totalCents 16700, the claim says 13360"; the agent's answer said only
+   * "NOT PROVED", because a plan run's driver account is left out of the answer.
+   */
+  const PLATFORM_VERDICT =
+    'Drove 7 actions and saved 2 flow(s): harness-on-checkout--checkout, harness-on-checkout--home. ' +
+    'No end-state check: the journey names no text the page should show when it is done, so nothing ' +
+    'checked where it ended. Learned 1 thing(s) about this app for the next drive. Not proved: ' +
+    'claim-outcome-unmet: POST /api/orders sent promoCode missing, the claim says SAVE20; totalCents ' +
+    '16700, the claim says 13360.';
+  const FINDING =
+    'claim-outcome-unmet: POST /api/orders sent promoCode missing, the claim says SAVE20; totalCents 16700, the claim says 13360.';
+
+  it("carries the platform's failed check verbatim, in the answer and in the fix request", () => {
+    const out = exploreReport({
+      ...base,
+      drive: { ...drive, summary: PLATFORM_VERDICT, goalMet: false },
+      journeys: [{ title: 'On /checkout', status: 'failed' }],
+    } as never);
+    expect(out['findings']).toEqual([FINDING]);
+    expect(String(out['summary'])).toContain(FINDING);
+    expect(fixRequest(out)).toContain(FINDING);
+  });
+
   it('keeps the local plan and the driver account when nothing else planned it', () => {
     const out = exploreReport(base);
     expect(out['plan']).toEqual({ summary: '15 replays', steps: base.plan.steps });
     expect(out['driverAccount']).toBe(drive.summary);
+  });
+});
+
+/*
+ * From a headless run: asked to "verify this with the Reticle Harness", the agent loaded
+ * reticle_verify, read a description that opened on "What is proved" and named the Harness only
+ * deep inside, for "a project with NO saved flows", and drove the app itself.
+ */
+describe('the Harness is findable by its name', () => {
+  it('reticle_verify names the Reticle Harness and its action in its first sentence', async () => {
+    const { MERGED_TOOLS } = await import('./tools.js');
+    const verify = MERGED_TOOLS.find((tool) => 'reticle_verify' === tool.name);
+    const first = (verify?.description ?? '').split('. ')[0] ?? '';
+    expect(first).toContain('Reticle Harness');
+    expect(first).toContain('"explore"');
   });
 });
