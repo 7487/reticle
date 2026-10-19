@@ -290,3 +290,56 @@ describe(`a Chromium named by ${ReticleEnv.CHROMIUM_PATH}`, () => {
     }
   });
 });
+
+describe('the launch failure hint (#691)', () => {
+  /**
+   * The Oct 12 field report: the install the hint names succeeds in the reporter's shell, and
+   * acquire still refuses, because the daemon looks in a different browsers root (its HOME or
+   * PLAYWRIGHT_BROWSERS_PATH differs). The preflight and doctor messages name the probed path;
+   * the launch translation replaced the whole error with a bare command and threw the path away,
+   * so the divergence was invisible in the one message the reporter actually read.
+   *
+   * The path comes from Playwright's own error, which names the build the failed launch
+   * actually used — the bundled build, the RETICLE_CHROMIUM_PATH executable, or an installed
+   * Chrome or Edge — never from a fresh bundled-path lookup that can name a build nobody tried.
+   */
+  it('names the path the failed launch used, even when it is not the bundled path', () => {
+    const hint = chromiumLaunchHint(
+      "browserType.launch: Executable doesn't exist at /opt/reticle/chromium/chrome",
+    );
+    expect(hint).toContain('Chromium is not installed for Playwright');
+    expect(hint).toContain('looked for /opt/reticle/chromium/chrome');
+    expect(hint).toContain('install chromium');
+  });
+
+  /**
+   * A Windows account name can hold a space, such as C:\Users\Jo Doe. The pattern must read
+   * to the end of the line, or the message names C:\Users\Jo, a path that does not exist.
+   */
+  it('names the full path when the path contains a space', () => {
+    const hint = chromiumLaunchHint(
+      "browserType.launch: Executable doesn't exist at " +
+        'C:\\Users\\Jo Doe\\AppData\\Local\\ms-playwright\\chromium-1223\\chrome-win\\chrome.exe\n' +
+        'Looks like Playwright Test or Playwright was just installed or updated.',
+    );
+    expect(hint).toContain('Chromium is not installed for Playwright');
+    expect(hint).toContain(
+      'looked for C:\\Users\\Jo Doe\\AppData\\Local\\ms-playwright\\chromium-1223\\chrome-win\\chrome.exe',
+    );
+  });
+
+  it('keeps the bare command when the failure names no path', () => {
+    const hint = chromiumLaunchHint('browserType.launch: Target crashed unexpectedly');
+    expect(hint).toMatch(/^Chromium is not installed for Playwright\. Run: /);
+    expect(hint).toContain('install chromium');
+    expect(hint).not.toContain('looked for');
+  });
+
+  it('still sends a missing-shared-library failure to install-deps', () => {
+    const hint = chromiumLaunchHint(
+      'browserType.launch: Host system is missing dependencies to run browsers.',
+    );
+    expect(hint).toContain('install-deps chromium');
+    expect(hint).not.toContain('looked for');
+  });
+});

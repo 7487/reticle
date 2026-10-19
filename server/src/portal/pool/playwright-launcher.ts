@@ -199,10 +199,42 @@ function wrapBrowser(browser: Browser): PooledBrowser {
  *
  * Pinned to the playwright this process bundles. Unpinned, `npx` fetches the latest playwright and
  * installs ITS browser revision — a build this launcher will never look at — so the user follows the
- * advice, it succeeds, and the next launch fails identically. Shares one builder with `doctor` so the
- * two cannot suggest different commands for the same missing browser.
+ * advice, it succeeds, and the next launch fails identically. Shares one builder with `doctor` so
+ * the two cannot suggest different commands for the same missing browser.
+ *
+ * When Playwright's error names the executable the failed launch looked for, the message names
+ * it too, the way the preflight refusal and the doctor line already do. Without it the launch
+ * translation was the one surface that hid the evidence: a daemon whose HOME
+ * or PLAYWRIGHT_BROWSERS_PATH differs from the shell that ran the install keeps refusing after a
+ * successful install, and a bare command gives the reader no way to see that the lookup is aimed at
+ * a root nothing was installed into (#691).
  */
-const CHROMIUM_MISSING_HINT = `Chromium is not installed for Playwright. Run: ${chromiumInstallCommand(bundledPlaywrightVersion())}`;
+function chromiumMissingHint(executablePath?: string): string {
+  const command = chromiumInstallCommand(bundledPlaywrightVersion());
+  return executablePath === undefined
+    ? `Chromium is not installed for Playwright. Run: ${command}`
+    : `Chromium is not installed for Playwright — looked for ${executablePath}. Run: ${command}`;
+}
+
+/**
+ * The executable Playwright's error says the failed launch looked for, or undefined when the
+ * error names none.
+ *
+ * Playwright reports the build the failed launch actually used — `Executable doesn't exist at
+ * <path>` — whether that is the bundled build, the RETICLE_CHROMIUM_PATH executable, or an
+ * installed Chrome or Edge. Reading it here keeps the hint honest: a fresh bundled-path lookup
+ * would name a build nobody tried whenever the launch used anything else.
+ */
+function pathFromPlaywrightError(msg: string): string | undefined {
+  // Playwright puts the path at the end of the line, and a Windows path can hold a space
+  // (for example C:\Users\Jo Doe). Read to the end of the line and trim the result.
+  const found = /executable doesn.?t exist at (.+)$/im.exec(msg);
+  if (null === found) return undefined;
+  const captured = found[1];
+  if (undefined === captured) return undefined;
+  const path = captured.trim();
+  return '' === path ? undefined : path;
+}
 
 /**
  * A DIFFERENT first-run failure from the one above: the browser binary is already there, but the
@@ -250,7 +282,7 @@ export function chromiumLaunchHint(msg: string): string | undefined {
   // missing binary and send the user through a fix that changes nothing.
   if (/host system is missing dependencies/i.test(msg)) return CHROMIUM_MISSING_DEPS_HINT;
   if (/executable doesn.?t exist|playwright install|browsertype\.launch/i.test(msg)) {
-    return CHROMIUM_MISSING_HINT;
+    return chromiumMissingHint(pathFromPlaywrightError(msg));
   }
   return undefined;
 }
