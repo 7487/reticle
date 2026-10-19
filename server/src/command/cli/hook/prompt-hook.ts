@@ -15,18 +15,21 @@
  * Nothing here reaches telemetry: `cli.ts` runs this before it reports the command.
  */
 import {
-  appendFileSync,
   closeSync,
+  constants,
   existsSync,
   fstatSync,
+  ftruncateSync,
   mkdirSync,
   openSync,
   readFileSync,
   renameSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative } from 'node:path';
 import { ReticleDir, ReticleEnv } from '@reticlehq/core';
+import { PromptHookAgent } from '@reticlehq/init';
 import { PromptContextSchema } from '@reticlehq/core/artifacts';
 import { discoverProjectConfigs } from '@/command/cli/config/config-discovery.js';
 import {
@@ -36,21 +39,40 @@ import {
   redactSecrets,
   sharesRequests,
 } from '@/memory/intent/record-request.js';
-
-/** The agents whose hook calls this. The ids match `PromptHookAgent` in `@reticlehq/init`. */
-const Agent = {
-  CURSOR: 'cursor',
-  GEMINI: 'gemini',
-  WINDSURF: 'windsurf',
-} as const;
+import { readTextOrUndefined } from '@/memory/project/fs/fs-port.js';
+import {
+  WORKSPACE_GITIGNORE,
+  workspaceGitignore,
+} from '@/memory/journal/on-disk/workspace-gitignore.js';
 
 /** A hook fired twice for one prompt (VS Code and Copilot CLI read one file) keeps one copy. */
 const DUPLICATE_WINDOW_MS = 10_000;
 /** The history moves aside once it passes this size, so `.reticle/` cannot grow without end. */
 const MAX_HISTORY_BYTES = 2 * 1024 * 1024;
-const HISTORY_ROTATED = 'requests.1.jsonl';
-/** A prompt the agent harness wrote for itself (`<task-notification>`, `<command-message>`). */
-const HARNESS_PROMPT = /^<[a-z][\w-]*[\s>]/i;
+/**
+ * The tags an agent harness wraps around a prompt it wrote for itself: a background task that
+ * finished, a slash command, a shell escape, a reminder. Only these names. A user prompt that starts
+ * with a tag of their own (`<Button> must be disabled`) is a real request, and is kept.
+ */
+const HARNESS_TAGS: readonly string[] = [
+  'system-reminder',
+  'task-notification',
+  'agent-message',
+  'cross-session-message',
+  'teammate-message',
+  'command-name',
+  'command-message',
+  'command-args',
+  'local-command-stdout',
+  'local-command-stderr',
+  'local-command-caveat',
+  'bash-input',
+  'bash-stdout',
+  'bash-stderr',
+  'persisted-output',
+  'user-prompt-submit-hook',
+];
+const HARNESS_PROMPT = new RegExp(`^<(?:${HARNESS_TAGS.join('|')})[\\s>]`);
 const OFF_VALUES: ReadonlySet<string> = new Set(['0', 'false', 'off', 'no']);
 /** Where each agent names its project when the payload does not. */
 const PROJECT_DIR_ENV = ['CLAUDE_PROJECT_DIR', 'CURSOR_PROJECT_DIR', 'GEMINI_PROJECT_DIR'];
@@ -78,7 +100,7 @@ export function promptFromPayload(
   const body = isObject(payload) ? payload : {};
   const toolInfo = isObject(body['tool_info']) ? body['tool_info'] : {};
   const prompt =
-    Agent.WINDSURF === agent
+    PromptHookAgent.WINDSURF === agent
       ? (text(toolInfo['user_prompt']) ?? text(body['prompt']))
       : (text(body['prompt']) ?? text(toolInfo['user_prompt']));
   const roots = Array.isArray(body['workspace_roots']) ? body['workspace_roots'] : [];
@@ -92,8 +114,8 @@ export function promptFromPayload(
 
 /** What the hook prints. Cursor and Gemini read stdout as JSON; the rest need nothing. */
 export function hookAck(agent: string): string {
-  if (Agent.CURSOR === agent) return `${JSON.stringify({ continue: true })}\n`;
-  if (Agent.GEMINI === agent) return '{}\n';
+  if (PromptHookAgent.CURSOR === agent) return `${JSON.stringify({ continue: true })}\n`;
+  if (PromptHookAgent.GEMINI === agent) return '{}\n';
   return '';
 }
 
@@ -158,21 +180,31 @@ function keepIn(root: string, agent: string, prompt: string, at: number): boolea
   if (repeats(requestPath, request, at)) return false;
   const context = promptContextFor(prompt, [], at, sharesRequests(projectDir, root));
   mkdirSync(root, { recursive: true });
+  // The hook can run before any daemon has written `.reticle/.gitignore`: write it, or add the
+  // prompt files to an older one, before a prompt lands where `git add -A` would take it.
+  const ignorePath = join(root, WORKSPACE_GITIGNORE);
+  const ignore = workspaceGitignore(readTextOrUndefined(ignorePath));
+  if (ignore !== undefined) writeFileSync(ignorePath, ignore);
   const tmp = `${requestPath}.${String(process.pid)}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(context, null, JSON_INDENT)}\n`);
   renameSync(tmp, requestPath);
   const historyPath = join(root, ReticleDir.REQUESTS_LOG_FILE);
   // ponytail: one rotated file; older history is dropped once a second one fills.
-  // The size comes from the open file, not a second look at the path, which can change between.
-  const fd = openSync(historyPath, 'a');
-  let full = false;
+  // Every step goes through one open file, so the path cannot change between a check and a write.
+  // It is not opened to append: Windows cannot truncate a file that is open to append. Two hooks
+  // that write in the same instant can lose one line of history.
+  const fd = openSync(historyPath, constants.O_RDWR | constants.O_CREAT);
   try {
-    full = MAX_HISTORY_BYTES < fstatSync(fd).size;
+    let end = fstatSync(fd).size;
+    if (MAX_HISTORY_BYTES < end) {
+      writeFileSync(join(root, ReticleDir.REQUESTS_LOG_ROTATED_FILE), readFileSync(fd));
+      ftruncateSync(fd, 0);
+      end = 0;
+    }
+    writeSync(fd, `${JSON.stringify({ at, agent, request: context.request })}\n`, end);
   } finally {
     closeSync(fd);
   }
-  if (full) renameSync(historyPath, join(root, HISTORY_ROTATED));
-  appendFileSync(historyPath, `${JSON.stringify({ at, agent, request: context.request })}\n`);
   return true;
 }
 
