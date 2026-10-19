@@ -309,6 +309,8 @@ const REACHES_FOR: Record<string, readonly string[]> = {
     'facts',
     'identity',
     'impact',
+    // A production nonce decides whether a HELLO opens a production session, and with what scope.
+    'production',
     'session',
     'telemetry',
     'version',
@@ -571,6 +573,8 @@ const REACHES_FOR: Record<string, readonly string[]> = {
     'ports',
     'presence',
     'prior',
+    // A production session passes every act through the production policy before it is sent.
+    'production',
     'recall',
     'resolve',
     'telemetry',
@@ -809,6 +813,8 @@ const REACHES_FOR: Record<string, readonly string[]> = {
     'oracles',
     'pool',
     'prior',
+    // A production drive judges a native click too, and its lease asks the service for a ticket.
+    'production',
     'project',
     'read',
     'recording',
