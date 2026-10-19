@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import { ElementState } from '@reticlehq/core';
 
-import { ARIA_HIDDEN_NOTE, evalElement } from './predicate-element.js';
+import { ARIA_HIDDEN_NOTE, evalElement, HTML_TAG_TO_ARIA_ROLE } from './predicate-element.js';
 import type { PredicateSession } from './predicate-session.js';
 
 const session: PredicateSession = {
@@ -287,4 +287,39 @@ it('does not blame aria-hidden when a visible element exists in the wrong state 
   );
   expect(result.pass).toBe(false);
   expect(result.failureReason).not.toContain(ARIA_HIDDEN_NOTE);
+});
+
+it('tells the agent that iframe is not an ARIA role and names the correct role (#1696)', async () => {
+  const page = pageWith(() => undefined);
+  const result = await evalElement(page, { role: 'iframe' }, undefined, false, true);
+  expect(result.pass).toBe(false);
+  expect(result.failureReason).toContain("'iframe' is not an ARIA role");
+  expect(result.failureReason).toContain("role 'generic'");
+});
+
+it('names the correct non-generic role when the tag maps to one (#1696)', async () => {
+  const page = pageWith(() => undefined);
+  const result = await evalElement(page, { role: 'nav' }, undefined, false, true);
+  expect(result.pass).toBe(false);
+  expect(result.failureReason).toContain("'nav' is not an ARIA role");
+  expect(result.failureReason).toContain("role 'navigation'");
+});
+
+it('names the condition for section whose role depends on whether it is named (#1696)', async () => {
+  const page = pageWith(() => undefined);
+  const result = await evalElement(page, { role: 'section' }, undefined, false, true);
+  expect(result.pass).toBe(false);
+  expect(result.failureReason).toContain("'section' is not an ARIA role");
+  expect(result.failureReason).toContain('named');
+  expect(result.failureReason).toContain("'region'");
+  expect(result.failureReason).toContain("'generic'");
+});
+
+it('HTML_TAG_TO_ARIA_ROLE covers the common mistakes and no non-rendered tags', () => {
+  expect(HTML_TAG_TO_ARIA_ROLE.has('script')).toBe(false);
+  expect(HTML_TAG_TO_ARIA_ROLE.has('style')).toBe(false);
+  expect(HTML_TAG_TO_ARIA_ROLE.has('template')).toBe(false);
+  expect(HTML_TAG_TO_ARIA_ROLE.has('iframe')).toBe(true);
+  expect(HTML_TAG_TO_ARIA_ROLE.get('input')).toBe('textbox');
+  expect(HTML_TAG_TO_ARIA_ROLE.get('nav')).toBe('navigation');
 });

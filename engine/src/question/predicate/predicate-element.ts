@@ -37,6 +37,75 @@ export const ARIA_HIDDEN_NOTE =
   'text is inside an aria-hidden subtree — drawn on screen but excluded from the accessible tree';
 
 /**
+ * HTML tag names mapped to the ARIA role that `getRole` gives them. A query like `{ role: "iframe" }`
+ * always returns zero results because `iframe` is a tag, not a role. The map names the correct role
+ * so the hint can say exactly what to use instead.
+ */
+export const HTML_TAG_TO_ARIA_ROLE = new Map([
+  ['iframe', 'generic'],
+  ['div', 'generic'],
+  ['span', 'generic'],
+  ['video', 'generic'],
+  ['audio', 'generic'],
+  ['canvas', 'generic'],
+  ['embed', 'generic'],
+  ['object', 'generic'],
+  ['input', 'textbox'],
+  ['textarea', 'textbox'],
+  ['a', 'link'],
+  ['select', 'combobox'],
+  ['nav', 'navigation'],
+  ['li', 'listitem'],
+  ['ul', 'list'],
+  ['ol', 'list'],
+  ['p', 'paragraph'],
+  ['h1', 'heading'],
+  ['h2', 'heading'],
+  ['h3', 'heading'],
+  ['h4', 'heading'],
+  ['h5', 'heading'],
+  ['h6', 'heading'],
+  ['header', 'banner'],
+  ['footer', 'contentinfo'],
+  ['aside', 'complementary'],
+  ['section', 'region'],
+]);
+
+/**
+ * When the query's role is a raw HTML tag name, name the correct ARIA role to use instead.
+ * Context-dependent tags state the condition so the hint is never wrong.
+ */
+function describeUnreachableRole(role: string | undefined): string | undefined {
+  if (role === undefined) return undefined;
+  const tag = role.toLowerCase();
+  const ariaRole = HTML_TAG_TO_ARIA_ROLE.get(tag);
+  if (ariaRole === undefined) return undefined;
+  if ('section' === tag) {
+    return (
+      `'section' is not an ARIA role — ` +
+      `a named <section> (with aria-label, aria-labelledby, or title) has role 'region'; ` +
+      `an unnamed one has role 'generic'`
+    );
+  }
+  if ('a' === tag) {
+    return `'a' is not an ARIA role — <a> elements have role 'link' when they carry an href, otherwise 'generic'`;
+  }
+  if ('select' === tag) {
+    return `'select' is not an ARIA role — <select> elements have role 'combobox', or 'listbox' when the multiple attribute is set`;
+  }
+  if ('input' === tag) {
+    return (
+      `'input' is not an ARIA role — <input> role depends on its type attribute: ` +
+      `'textbox' for text/email/url/password, 'checkbox', 'radio', 'button', or 'slider' for range`
+    );
+  }
+  if ('generic' === ariaRole) {
+    return `'${role}' is not an ARIA role — <${role}> elements have role 'generic'; try { role: 'generic' } with a name or title, or use a testid`;
+  }
+  return `'${role}' is not an ARIA role — <${role}> elements have role '${ariaRole}'; try { role: '${ariaRole}' }`;
+}
+
+/**
  * The caveat for a present-testid list that was cut at its cap, or nothing when it was whole.
  *
  * Phrased as what the list IS — "the first N of M in document order" — rather than as an apology,
@@ -376,11 +445,13 @@ export async function evalElement(
   const nearMiss = describeNameNearMiss(match.hint?.nameNearMiss, query.name, nearMissRole);
   const caseMiss = describeCaseMiss(match.hint?.caseMiss);
   const ariaNote = true === match.hint?.ariaHiddenMatch ? ARIA_HIDDEN_NOTE : undefined;
+  const unreachableRole = describeUnreachableRole(nearMissRole);
   const clause =
     caseMiss ??
     splitText ??
     nearMiss ??
     ariaNote ??
+    unreachableRole ??
     (alsoHere === undefined || '' === alsoHere ? undefined : alsoHere);
   const suffix = clause === undefined ? '' : ` — ${clause}`;
   // The evidence list is capped in document order, so a region low on the page is exactly what it
