@@ -419,11 +419,13 @@ const PAGE_PARAMS = ['page', 'offset', 'cursor', 'after', 'start', 'skip', 'from
 
 /** "Page 2", "page 2 of 6", "2 / 6", "2 of 6". */
 const PAGE_LABEL = /\bpage\s+(\d+)\b|\b(\d+)\s*(?:of|\/)\s*\d+(?:,\d{3})*\b/i;
+const RECORD_RANGE_LABEL =
+  /\b\d[\d,]*\s*(?:[-–—]|\bto\b)\s*\d[\d,]*\s+of\s+\d[\d,]*\b|\b\d[\d,]*\s+of\s+\d[\d,]*\s+(?:records|items|results)\b/i;
 
 export function pageNumber(text: unknown): number | undefined {
   if ('string' !== typeof text) return undefined;
+  if (RECORD_RANGE_LABEL.test(text)) return undefined;
   const match = PAGE_LABEL.exec(text);
-  if (match?.[2] !== undefined && /[-–—]\s*$/.test(text.slice(0, match.index))) return undefined;
   const raw = match?.[1] ?? match?.[2];
   return raw === undefined ? undefined : Number(raw);
 }
@@ -447,6 +449,8 @@ export function pageRequest(
     const value = url.searchParams.get(param);
     if (value !== null) {
       url.searchParams.delete(param);
+      // jQuery `cache: false` changes `_` on every otherwise identical GET.
+      url.searchParams.delete('_');
       url.searchParams.sort();
       return { path: url.pathname, param, value, query: url.searchParams.toString() };
     }
