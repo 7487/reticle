@@ -286,7 +286,7 @@ export const OBSERVE_TOOLS: ToolDef[] = [
       timeout_ms: waitForTimeoutMsSchema
         .optional()
         .describe(
-          `Maximum wait in milliseconds. Default: 4000, up to 600000. One call waits at most ${String(MAX_BLOCKING_WAIT_MS)} ms, because your MCP client aborts a longer request; past that it returns resume_ms, and you call again with timeout_ms: resume_ms and the same since to keep waiting.`,
+          `Maximum wait in milliseconds. Default: 4000, up to 600000. One call waits at most ${String(MAX_BLOCKING_WAIT_MS)} ms, because your MCP client aborts a longer request; past that it returns resume_ms, and you call again with timeout_ms: resume_ms, the same predicate, the same since, and the same intent to keep waiting.`,
         ),
       since: cursorSchema
         .optional()
@@ -299,7 +299,7 @@ export const OBSERVE_TOOLS: ToolDef[] = [
         .number()
         .optional()
         .describe(
-          'Present when this call stopped at the per-call limit before the predicate was seen. Call again with timeout_ms set to this, the same predicate and the same since, to keep waiting.',
+          'Present when this call stopped at the per-call limit before the predicate was seen. Call again with timeout_ms set to this, the same predicate, the same since, and the same intent to keep waiting.',
         ),
       verified: z
         .string()
