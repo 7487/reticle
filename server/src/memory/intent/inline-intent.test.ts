@@ -157,6 +157,21 @@ describe('an inline intent lands in the same ledger reticle_intent writes', () =
     const [intent] = await ledger.read();
     expect(intent?.statement).toBe(STATEMENT);
   });
+
+  it('records and proves the prose on a graded wait', async () => {
+    const { session, deps, ledger } = harness();
+    session.pushEvent(signalEvent());
+    const result = (await tool(ReticleTool.WAIT_FOR).handler(deps, {
+      ...assertSignal,
+      intent: STATEMENT,
+    })) as VerdictResult;
+
+    expect(result.verified).toBe(Verified.YES);
+    const [intent] = await ledger.read();
+    expect(intent?.statement).toBe(STATEMENT);
+    expect(intent?.state).toBe(IntentState.PROVED);
+    expect(intent?.provenBy?.verdictId).toContain(ReticleTool.WAIT_FOR);
+  });
 });
 
 describe('a verdict discharges the intent it proved, and nothing it did not', () => {
